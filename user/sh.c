@@ -164,6 +164,10 @@ main(void)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
     }
+    int status;
+    int wpid;
+    while ((wpid = wait_noblock((uint64)&status)) > 0)
+      printf("[bg %d] exited with status %d\n", wpid, status);
     struct cmd *cmd = parsecmd(buf);
     if (cmd->type == BACK) {
       int pid = fork1();
