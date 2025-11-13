@@ -124,8 +124,7 @@ runcmd(struct cmd *cmd)
 
   case BACK:
     bcmd = (struct backcmd*)cmd;
-    if(fork1() == 0)
-      runcmd(bcmd->cmd);
+    runcmd(bcmd->cmd);
     break;
   }
   exit(0);
@@ -165,8 +164,20 @@ main(void)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
     }
-    if(fork1() == 0)
-      runcmd(parsecmd(buf));
+    struct cmd *cmd = parsecmd(buf);
+    if (cmd->type == BACK) {
+      int pid = fork1();
+      if (pid == 0) {
+        runcmd(cmd);
+      } 
+      else {
+        printf("%d\n", pid);
+      }
+      continue;  // Don't wait for background jobs
+    }
+    else if (fork1() == 0) {
+      runcmd(cmd);
+    }
     wait(0);
   }
   exit(0);
