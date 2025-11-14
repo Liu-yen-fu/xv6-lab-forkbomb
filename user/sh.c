@@ -1,5 +1,5 @@
 // Shell.
-
+#include "kernel/param.h"
 #include "kernel/types.h"
 #include "user/user.h"
 #include "kernel/fcntl.h"
@@ -49,10 +49,22 @@ struct backcmd {
   struct cmd *cmd;
 };
 
+int jobs[NPROC];
+int njobs = 0;
+
+// 互動模式才印提示字元（Step4 要用）
+int interactive = 1;
+
+
 int fork1(void);  // Fork but panics on failure.
 void panic(char*);
 struct cmd *parsecmd(char*);
 void runcmd(struct cmd*) __attribute__((noreturn));
+
+void checkbg(void);      // 檢查已結束的背景工作
+void addjob(int pid);
+void removejob(int pid);
+void printjobs(void);    // for "jobs" 指令
 
 // Execute cmd.  Never returns.
 void
@@ -124,7 +136,15 @@ runcmd(struct cmd *cmd)
 
   case BACK:
     bcmd = (struct backcmd*)cmd;
-    runcmd(bcmd->cmd);
+    {
+      int pid = fork1();
+      if(pid == 0){
+        runcmd(bcmd->cmd);
+      } else {
+        printf("[%d]\n", pid);
+        addjob(pid);
+      }
+    }
     break;
   }
   exit(0);
@@ -133,16 +153,21 @@ runcmd(struct cmd *cmd)
 int
 getcmd(char *buf, int nbuf)
 {
-  write(2, "$ ", 2);
+  if(interactive){
+    checkbg();            // BEFORE printing new "$ "
+    write(2, "$ ", 2);
+  }
+
   memset(buf, 0, nbuf);
-  gets(buf, nbuf);
-  if(buf[0] == 0) // EOF
+  if(gets(buf, nbuf) == 0)  // EOF
+    return -1;
+  if(buf[0] == 0)
     return -1;
   return 0;
 }
 
 int
-main(void)
+main(int argc, char **argv)
 {
   static char buf[100];
   int fd;
@@ -155,37 +180,58 @@ main(void)
     }
   }
 
+  // 判斷是不是 script 模式（Step4）
+  if(argc == 1){
+    interactive = 1;
+  } else if(argc == 2){
+    interactive = 0;
+    close(0);
+    if(open(argv[1], O_RDONLY) < 0){
+      fprintf(2, "sh: cannot open %s\n", argv[1]);
+      exit(1);
+    }
+  } else {
+    fprintf(2, "usage: sh [script]\n");
+    exit(1);
+  }
+
   // Read and run input commands.
   while(getcmd(buf, sizeof(buf)) >= 0){
+    // AFTER inputting a command
+    checkbg();
+
+    // 空行就跳過
+    if(buf[0] == 0)
+      continue;
+
+    // built-in: cd
     if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
-      // Chdir must be called by the parent, not the child.
       buf[strlen(buf)-1] = 0;  // chop \n
       if(chdir(buf+3) < 0)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
     }
-    int status;
-    int wpid;
-    while ((wpid = wait_noblock((uint64)&status)) > 0)
-      printf("[bg %d] exited with status %d\n", wpid, status);
+
+    // built-in: jobs（Step3）
+    if(strcmp(buf, "jobs\n") == 0){
+      printjobs();
+      continue;
+    }
+
     struct cmd *cmd = parsecmd(buf);
-    if (cmd->type == BACK) {
-      int pid = fork1();
-      if (pid == 0) {
-        runcmd(cmd);
-      } 
-      else {
-        printf("%d\n", pid);
-      }
-      continue;  // Don't wait for background jobs
-    }
-    else if (fork1() == 0) {
+
+    // top-level 是 BACK：讓 runcmd 自己處理（只 fork 一次）
+    if(cmd->type == BACK){
       runcmd(cmd);
+    } else {
+      if(fork1() == 0)
+        runcmd(cmd);
+      wait(0);
     }
-    wait(0);
   }
   exit(0);
 }
+
 
 void
 panic(char *s)
@@ -204,6 +250,47 @@ fork1(void)
     panic("fork");
   return pid;
 }
+
+void
+checkbg(void)
+{
+  int pid, status;
+
+  // 一直收到沒有 zombie 為止
+  while((pid = wait_noblock((uint64)&status)) > 0){
+    printf("[bg %d] exited with status %d\n", pid, status);
+    removejob(pid);
+  }
+}
+
+void
+addjob(int pid)
+{
+  if(njobs < NPROC)
+    jobs[njobs++] = pid;
+}
+
+void
+removejob(int pid)
+{
+  int i, j;
+  for(i = 0; i < njobs; i++){
+    if(jobs[i] == pid){
+      for(j = i+1; j < njobs; j++)
+        jobs[j-1] = jobs[j];
+      njobs--;
+      break;
+    }
+  }
+}
+
+void
+printjobs(void)
+{
+  for(int i = 0; i < njobs; i++)
+    printf("%d\n", jobs[i]);
+}
+
 
 //PAGEBREAK!
 // Constructors
